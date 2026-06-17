@@ -131,3 +131,17 @@ export function isScribdDomain(domain?: string): boolean {
   if (!domain?.trim()) return false;
   return resolveDomainAccessType(domain) === "authenticated" && resolveDomainAdapter(domain) === "scribd";
 }
+
+/** Domains configured for deep-web corpus sync (ingest, authenticated, hybrid). */
+export function listDeepWebDomains(): Array<{ domain: string; accessType: DomainAccessType }> {
+  const config = loadDomainSeeds();
+  const out: Array<{ domain: string; accessType: DomainAccessType }> = [];
+  for (const [domain, entry] of Object.entries(config)) {
+    if (domain === "default") continue;
+    const type = entry.type ?? "public";
+    if (type === "ingest" || type === "authenticated" || type === "hybrid") {
+      out.push({ domain, accessType: type });
+    }
+  }
+  return out;
+}

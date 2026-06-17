@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
-    "start": "node dist/cli.js",
+    "start": "node dist/cli.js serve --host 0.0.0.0",
+    "sync:deep-web": "node dist/cli.js deep-web sync-all",
     "serve": "tsx src/cli.ts serve",
     "test": "vitest run",
     "test:watch": "vitest",

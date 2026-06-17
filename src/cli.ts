@@ -27,6 +27,7 @@ import {
 import { getAuthenticatedSource } from "./sources/authenticated-source.js";
 import { parseUrlListContent, validateIngestUrls } from "./sources/url-ingest.js";
 import { loadDomainSeeds, resolveDomainAccessType } from "./core/domain-seeds.js";
+import { syncAllDeepWebSources } from "./sync/deep-web-scheduler.js";
 
 const program = new Command();
 
@@ -333,14 +334,35 @@ ingest
 program
   .command("serve")
   .description("Start REST API server")
-  .option("--host <host>", "Bind host")
-  .option("--port <port>", "Bind port")
+  .option("--host <host>", "Bind host (default: HOST env or config)")
+  .option("--port <port>", "Bind port (default: PORT env or config)")
   .option("-c, --config <path>", "Config path")
   .action(async (opts) => {
     const config = loadConfig(opts.config);
-    const host = opts.host ?? config.api.host;
-    const port = Number(opts.port ?? config.api.port);
+    const host = opts.host ?? process.env.HOST ?? config.api.host;
+    const port = Number(opts.port ?? process.env.PORT ?? config.api.port);
     await startApi(config, host, port);
+  });
+
+const deepWeb = program.command("deep-web").description("Deep-web auto-sync and frontend publish");
+
+deepWeb
+  .command("sync-all")
+  .description("Sync all ingest + authenticated deep-web sources and push to frontend webhook")
+  .option("-c, --config <path>", "Config path")
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    const result = await syncAllDeepWebSources(config);
+    console.log(`Deep-web sync-all @ ${result.syncedAt}`);
+    for (const r of result.results) {
+      const err = r.error ? ` — ${r.error}` : "";
+      console.log(`  ${r.domain}: ${r.documentCount} docs (synced=${r.synced})${err}`);
+    }
+    if (result.published) {
+      console.log("Published corpus update to frontend webhook/deploy hook.");
+    } else {
+      console.log("No webhook configured — set CORPUS_WEBHOOK_URL or FRONTEND_DEPLOY_HOOK_URL on Railway.");
+    }
   });
 
 const security = program.command("security").description("Nomad Cyber security utilities");

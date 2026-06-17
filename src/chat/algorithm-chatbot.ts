@@ -12,8 +12,8 @@ export interface ChatDocument {
   text: string;
   url: string;
   title: string;
-  /** Must be live web crawl — never test fixtures or local report files. */
-  source: "live";
+  /** live = crawled web; deep = unindexed / login-gated corpus (never censored when uncensored mode on). */
+  source: "live" | "deep";
   fetchedAt?: string;
 }
 
@@ -129,8 +129,8 @@ const ELIZA_RULES: Array<{ pattern: RegExp; responses: string[] }> = [
 
 const PHRASE_CYCLE = ["Tell me more.", "This is interesting."] as const;
 
-function liveDocumentsOnly(documents: ChatDocument[]): ChatDocument[] {
-  return documents.filter((d) => d.source === "live");
+function retrievalDocuments(documents: ChatDocument[]): ChatDocument[] {
+  return documents.filter((d) => d.source === "live" || d.source === "deep");
 }
 
 export function rankSentences(
@@ -138,7 +138,7 @@ export function rankSentences(
   documents: ChatDocument[],
   seedUrls: string[] = [],
 ): ChatSession["rankedSentences"] {
-  return rankSentencesForQuestion(question, liveDocumentsOnly(documents), seedUrls);
+  return rankSentencesForQuestion(question, retrievalDocuments(documents), seedUrls);
 }
 
 function applyElizaRule(input: string): string | null {
@@ -213,10 +213,10 @@ export function respondAlgorithm(
     };
   }
 
-  const liveDocs = liveDocumentsOnly(documents);
-  if (liveDocs.length) {
+  const corpusDocs = retrievalDocuments(documents);
+  if (corpusDocs.length) {
     session.lastQuestion = input;
-    session.rankedSentences = rankSentences(input, liveDocs, seedUrls);
+    session.rankedSentences = rankSentences(input, corpusDocs, seedUrls);
     session.retrievalCursor = 0;
 
     if (session.rankedSentences.length) {

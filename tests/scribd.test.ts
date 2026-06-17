@@ -28,7 +28,7 @@ describe("scribd corpus", () => {
       },
     ]);
     expect(docs).toHaveLength(1);
-    expect(docs[0].source).toBe("live");
+    expect(docs[0].source).toBe("deep");
     expect(docs[0].url).toContain("scribd.com");
   });
 

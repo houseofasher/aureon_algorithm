@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
+import { setDeepWebYamlConfig, type DeepWebConfig } from "./deep-web-config.js";
 
 export interface AppConfig {
   orchestrator: {
@@ -49,6 +50,7 @@ export interface AppConfig {
   api: { host: string; port: number };
   security: SecurityConfig;
   vendors: { path: string };
+  deepWeb?: DeepWebConfig;
 }
 
 export type EngineTypeName = string;
@@ -166,5 +168,7 @@ export function loadConfig(configPath?: string): AppConfig {
   if (!existsSync(path)) return structuredClone(DEFAULT_CONFIG);
   const raw = yaml.load(readFileSync(path, "utf8")) as Record<string, unknown>;
   const transformed = transformKeys(raw) as Partial<AppConfig>;
-  return { ...DEFAULT_CONFIG, ...transformed } as AppConfig;
+  const merged = { ...DEFAULT_CONFIG, ...transformed } as AppConfig;
+  if (merged.deepWeb) setDeepWebYamlConfig(merged.deepWeb);
+  return merged;
 }

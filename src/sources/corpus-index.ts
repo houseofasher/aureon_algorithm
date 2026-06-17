@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import type { ChatDocument } from "../chat/algorithm-chatbot.js";
+import { isDeepWebUncensored } from "../core/deep-web-config.js";
 
 const manifestEntrySchema = z.object({
   sourceId: z.string(),
@@ -111,15 +112,55 @@ export function saveIngestDocuments(
 }
 
 export function ingestDocumentsToChatDocuments(docs: IngestDocument[]): ChatDocument[] {
+  const minLen = isDeepWebUncensored() ? 1 : 80;
   return docs
-    .filter((d) => d.text.length >= 80)
+    .filter((d) => d.text.length >= minLen)
     .map((d) => ({
       text: d.text,
       url: d.url,
       title: d.title,
-      source: "live" as const,
+      source: "deep" as const,
       fetchedAt: d.syncedAt,
     }));
+}
+
+export interface ExportedCorpusDocument {
+  id: string;
+  title: string;
+  url: string;
+  text: string;
+  sourceId: string;
+  fetchedAt: string;
+}
+
+export function exportCorpusDocuments(domain?: string, root = process.cwd()): ExportedCorpusDocument[] {
+  const out: ExportedCorpusDocument[] = [];
+  if (domain) {
+    for (const d of loadIngestDocuments(domain, root)) {
+      out.push({
+        id: d.id,
+        title: d.title,
+        url: d.url,
+        text: d.text,
+        sourceId: d.sourceId,
+        fetchedAt: d.syncedAt,
+      });
+    }
+    return out;
+  }
+
+  const manifest = loadCorpusManifest(root);
+  for (const entry of manifest.sources) {
+    if (entry.domain) {
+      out.push(...exportCorpusDocuments(entry.domain, root));
+    }
+  }
+  return out;
+}
+
+export function loadAllIngestDomains(root = process.cwd()): string[] {
+  const manifest = loadCorpusManifest(root);
+  return [...new Set(manifest.sources.map((s) => s.domain).filter(Boolean) as string[])];
 }
 
 /** Simple keyword overlap search across manifest-backed corpora. */

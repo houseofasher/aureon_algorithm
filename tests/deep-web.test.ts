@@ -57,6 +57,14 @@ describe("deep-web registry", () => {
     expect(ids).toContain("scribd");
   });
 
+  it("lists deep-web domains from domain-seeds.yaml", async () => {
+    const { listDeepWebDomains } = await import("../src/core/domain-seeds.js");
+    loadDomainSeeds(true);
+    const domains = listDeepWebDomains().map((d) => d.domain);
+    expect(domains).toContain("scribd");
+    expect(domains).toContain("unlisted_public");
+  });
+
   it("loads empty corpus manifest by default", () => {
     const m = loadCorpusManifest();
     expect(m.sources).toBeInstanceOf(Array);

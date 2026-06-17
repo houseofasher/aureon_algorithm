@@ -1,17 +1,25 @@
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import type { Role } from "./core/models.js";
 import type { AppConfig } from "./core/config.js";
-import { allowedDomainsFromSeeds, loadDomainSeeds, resolveDomainSeeds } from "./core/domain-seeds.js";
+import { allowedDomainsFromSeeds, loadDomainSeeds, resolveDomainIngestList, resolveDomainSeeds } from "./core/domain-seeds.js";
+import { resolveDeepWebConfig } from "./core/deep-web-config.js";
 import { Orchestrator } from "./core/orchestrator.js";
 import { buildSecurityStack } from "./security/nomad.js";
 import { handleChat } from "./chat/chat-service.js";
 import { pagesToLiveDocuments } from "./chat/live-data-policy.js";
 import { loadScribdKnowledge } from "./sources/scribd-service.js";
 import { scribdLoginHelp } from "./sources/scribd.js";
-import { syncDeepWebSource, listDeepWebSources } from "./sources/deep-web-service.js";
-import { loadCorpusManifest } from "./sources/corpus-index.js";
+import { syncDeepWebSource, listDeepWebSources, loadDeepWebKnowledge } from "./sources/deep-web-service.js";
+import {
+  exportCorpusDocuments,
+  loadCorpusManifest,
+  searchCorpusDocuments,
+} from "./sources/corpus-index.js";
+import { ingestUrlsForDomain, ingestToChatDocuments } from "./sources/url-ingest.js";
+import { startDeepWebScheduler } from "./sync/deep-web-scheduler.js";
 import { formatReportText, runTopicLookup } from "./topic/index.js";
-import { augmentSeedsForQuestion, prioritizeSeedsForQuestion } from "./chat/retrieval-ranker.js";
+import { prioritizeSeedsForQuestion } from "./chat/retrieval-ranker.js";
 
 const SECURITY_HEADERS: Record<string, string> = {
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
@@ -27,6 +35,12 @@ export async function startApi(config: AppConfig, host: string, port: number): P
   orchestrator.init();
 
   const app = Fastify({ logger: true });
+
+  const deepCfg = resolveDeepWebConfig();
+  await app.register(cors, {
+    origin: deepCfg.corsOrigins.length ? deepCfg.corsOrigins : true,
+    methods: ["GET", "POST", "OPTIONS"],
+  });
 
   app.addHook("onSend", async (_req, reply) => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) reply.header(k, v);
@@ -222,6 +236,74 @@ export async function startApi(config: AppConfig, host: string, port: number): P
     }
   });
 
+  /** Auto-add unindexed URLs: fetch, persist to corpus + ingest list, push to frontend webhook. */
+  app.post<{ Body: Record<string, unknown> }>("/api/ingest/urls", async (req, reply) => {
+    const domain = String(req.body?.domain ?? "unlisted_public").trim();
+    const urls = Array.isArray(req.body?.urls) ? (req.body.urls as string[]) : [];
+    if (!urls.length) return reply.code(400).send({ error: "urls required" });
+    try {
+      const listPath = resolveDomainIngestList(domain);
+      const result = await ingestUrlsForDomain(config, domain, urls, {
+        listPath: listPath ?? undefined,
+      });
+      return {
+        domain,
+        documentCount: result.documents.length,
+        addedToList: result.added,
+        rejected: result.rejected,
+        manifest: loadCorpusManifest(),
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.code(400).send({ error: msg.split(" — ")[0], detail: msg });
+    }
+  });
+
+  app.get<{ Querystring: { domain?: string; q?: string; limit?: string } }>(
+    "/api/corpus/documents",
+    async (req) => {
+      const domain = req.query.domain?.trim();
+      const limit = Number(req.query.limit ?? 100);
+      let docs = exportCorpusDocuments(domain);
+      if (req.query.q?.trim()) {
+        const ranked = searchCorpusDocuments(
+          req.query.q,
+          docs.map((d) => ({
+            text: d.text,
+            url: d.url,
+            title: d.title,
+            source: "deep" as const,
+            fetchedAt: d.fetchedAt,
+          })),
+          limit,
+        );
+        const byUrl = new Map(docs.map((d) => [d.url, d]));
+        docs = ranked.map((r) => byUrl.get(r.url)).filter((d): d is NonNullable<typeof d> => Boolean(d));
+      } else {
+        docs = docs.slice(0, limit);
+      }
+      return {
+        domain: domain ?? null,
+        uncensored: deepCfg.uncensored,
+        count: docs.length,
+        documents: docs,
+      };
+    },
+  );
+
+  app.get<{ Querystring: { domain?: string } }>("/api/corpus/export", async (req) => {
+    const domain = req.query.domain?.trim();
+    const documents = exportCorpusDocuments(domain);
+    return {
+      exportedAt: new Date().toISOString(),
+      domain: domain ?? null,
+      uncensored: deepCfg.uncensored,
+      documentCount: documents.length,
+      manifest: loadCorpusManifest(),
+      documents,
+    };
+  });
+
   /** Aureon bridge — topic + domain resolves whitelisted seeds; live web pages only. */
   app.post<{ Body: Record<string, unknown> }>("/api/crawl", async (req, reply) => {
     const body = req.body ?? {};
@@ -267,18 +349,48 @@ export async function startApi(config: AppConfig, host: string, port: number): P
       );
       const allowed = allowedDomainsFromSeeds(seeds);
       const livePages = pagesToLiveDocuments(pages, allowed);
-      const documents = livePages.map((p) => ({
+      const liveDocuments = livePages.map((p) => ({
         text: p.text,
         url: p.url,
         title: p.title,
-        source: "live",
+        source: "live" as const,
         fetchedAt: p.fetchedAt,
       }));
+
+      let deepDocuments: Array<{
+        text: string;
+        url: string;
+        title: string;
+        source: "deep";
+        fetchedAt?: string;
+      }> = [];
+      if (domain) {
+        try {
+          const deep = await loadDeepWebKnowledge({ domain, config });
+          deepDocuments = deep.documents.map((d) => ({
+            text: d.text,
+            url: d.url,
+            title: d.title,
+            source: "deep" as const,
+            fetchedAt: d.fetchedAt,
+          }));
+        } catch {
+          /* deep corpus optional for hybrid/public domains */
+        }
+      } else if (body.includeDeepWeb === true) {
+        deepDocuments = ingestToChatDocuments("unlisted_public").map((d) => ({
+          ...d,
+          source: "deep" as const,
+        }));
+      }
+
+      const documents = [...deepDocuments, ...liveDocuments];
       return {
         jobId: job.id,
         domain: domain || null,
         topic,
-        livePageCount: documents.length,
+        livePageCount: liveDocuments.length,
+        deepWebDocumentCount: deepDocuments.length,
         documents,
       };
     } catch (err) {
@@ -325,6 +437,8 @@ export async function startApi(config: AppConfig, host: string, port: number): P
   if (security && config.security.enabled) {
     setInterval(() => security.vitalGuard.pulseCheck(), config.security.organismPulseSeconds * 1000);
   }
+
+  startDeepWebScheduler(config);
 
   await app.listen({ host, port });
   console.log(`Omnispider API listening on http://${host}:${port}`);

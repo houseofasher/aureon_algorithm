@@ -1,0 +1,12 @@
+[build]
+builder = "nixpacks"
+buildCommand = "npm ci && npm run build"
+
+[deploy]
+startCommand = "node dist/cli.js serve --host 0.0.0.0"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
+
+# Optional: add a second Railway service with cron schedule:
+#   schedule = "0 */6 * * *"
+#   startCommand = "node dist/cli.js deep-web sync-all"

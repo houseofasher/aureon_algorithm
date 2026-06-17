@@ -80,3 +80,14 @@ security:
 
 vendors:
   path: "./vendors"
+
+# Deep-web: auto-sync on Railway + push to frontend webhook (override via env).
+deep_web:
+  auto_sync: true
+  sync_interval_hours: 6
+  uncensored: true
+  publish_full_text: true
+  webhook_url: ""
+  webhook_secret: ""
+  frontend_deploy_hook: ""
+  cors_origins: []

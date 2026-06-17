@@ -61,13 +61,14 @@ export function saveScribdCorpus(corpus: ScribdCorpus, path = defaultCorpusPath(
 }
 
 export function scribdDocumentsToChatDocuments(docs: ScribdDocument[]): ChatDocument[] {
+  const minLen = 80;
   return docs
-    .filter((d) => d.text.length >= 80)
+    .filter((d) => d.text.length >= minLen)
     .map((d) => ({
       text: d.text,
       url: d.url,
       title: d.title,
-      source: "live" as const,
+      source: "deep" as const,
       fetchedAt: d.syncedAt,
     }));
 }

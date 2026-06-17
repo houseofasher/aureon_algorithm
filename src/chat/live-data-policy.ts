@@ -124,9 +124,11 @@ export function pagesToLiveDocuments(
 }
 
 export function assertLiveDocuments(documents: ChatDocument[]): ChatDocument[] {
-  const live = documents.filter((d) => d.source === "live" && isLiveHttpUrl(d.url));
-  if (!live.length && documents.length) {
-    throw new Error("LIVE_DATA_REQUIRED — no live web pages in corpus (archive/test sources rejected)");
+  const usable = documents.filter(
+    (d) => d.source === "deep" || (d.source === "live" && isLiveHttpUrl(d.url)),
+  );
+  if (!usable.length && documents.length) {
+    throw new Error("LIVE_DATA_REQUIRED — no live or deep-web pages in corpus (archive/test sources rejected)");
   }
-  return live;
+  return usable;
 }
