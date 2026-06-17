@@ -56,7 +56,10 @@ default:
   seeds:
     - https://www.britannica.com/
 
-# Personal Scribd library — requires auth sync (omnispider scribd sync)
+# Personal Scribd library — deep-web style (login-gated, not indexable by search engines).
+# Public crawl seeds cannot fetch these pages; use authenticated sync instead:
+#   omnispider scribd login && omnispider scribd sync
+# Chat: omnispider chat -d scribd "your question"
 scribd:
   seeds:
     - https://www.scribd.com/home

@@ -19,15 +19,42 @@ export interface ScribdLoadResult {
   synced: boolean;
 }
 
+let syncInFlight: Promise<ScribdCorpus> | null = null;
+
+function resolveSyncTtlHours(raw: number | undefined): number {
+  const value = raw ?? Number(process.env.SCRIBD_SYNC_TTL_HOURS ?? 24);
+  if (!Number.isFinite(value)) return 24;
+  return Math.max(0, value);
+}
+
 export async function loadScribdKnowledge(opts: ScribdLoadOptions = {}): Promise<ScribdLoadResult> {
   const config = opts.config ?? scribdConfigFromEnv();
-  const ttl = opts.syncTtlHours ?? Number(process.env.SCRIBD_SYNC_TTL_HOURS ?? 24);
+  const ttl = resolveSyncTtlHours(opts.syncTtlHours);
   let corpus = loadScribdCorpus(config.corpusPath);
   let synced = false;
 
-  if (!corpus || opts.forceSync || isCorpusStale(corpus, ttl)) {
-    corpus = await syncScribdLibrary(config);
-    synced = true;
+  const needsSync = !corpus || opts.forceSync || (corpus && isCorpusStale(corpus, ttl));
+  if (needsSync) {
+    try {
+      if (!syncInFlight) {
+        syncInFlight = syncScribdLibrary(config).finally(() => {
+          syncInFlight = null;
+        });
+      }
+      corpus = await syncInFlight;
+      synced = true;
+    } catch (err) {
+      if (corpus) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[scribd] sync failed, using cached corpus: ${msg}`);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (!corpus) {
+    throw new Error("SCRIBD_EMPTY — sync your library first: omnispider scribd sync");
   }
 
   return {
