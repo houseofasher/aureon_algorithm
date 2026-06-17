@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { loadConfig } from "./core/config.js";
 import { Orchestrator } from "./core/orchestrator.js";
 import { buildSecurityStack, ApiKeyRegistry } from "./security/nomad.js";
@@ -18,6 +19,14 @@ import { handleChat, resetChatSessions } from "./chat/chat-service.js";
 import { createInterface } from "node:readline/promises";
 import { loadScribdKnowledge } from "./sources/scribd-service.js";
 import { scribdLoginHelp, interactiveScribdLogin } from "./sources/scribd.js";
+import {
+  deepWebHelpForDomain,
+  listDeepWebSources,
+  syncDeepWebSource,
+} from "./sources/deep-web-service.js";
+import { getAuthenticatedSource } from "./sources/authenticated-source.js";
+import { parseUrlListContent, validateIngestUrls } from "./sources/url-ingest.js";
+import { loadDomainSeeds, resolveDomainAccessType } from "./core/domain-seeds.js";
 
 const program = new Command();
 
@@ -135,8 +144,8 @@ program
 
 program
   .command("chat")
-  .description("Algorithm chatbot — live web and/or Scribd library corpus")
-  .requiredOption("-d, --domain <slug>", "Domain slug (use scribd for your Scribd library)")
+  .description("Algorithm chatbot — live web, deep-web corpus, or hybrid")
+  .requiredOption("-d, --domain <slug>", "Domain slug (scribd, unlisted_public, or taxonomy slug)")
   .option("-s, --seed <url...>", "Override with explicit https seed URLs")
   .option("--include-scribd", "Merge synced Scribd library into any domain crawl")
   .option("--force-scribd-sync", "Refresh Scribd library before chat")
@@ -177,11 +186,11 @@ program
           if (result.sources.length) {
             console.log(`     Source: ${result.sources[0].title} — ${result.sources[0].url}`);
           }
-          const scribdNote =
-            result.scribdDocumentCount != null && result.scribdDocumentCount > 0
-              ? ` | Scribd docs: ${result.scribdDocumentCount}${result.scribdSynced ? " (synced)" : ""}`
+          const deepNote =
+            result.deepWebDocumentCount != null && result.deepWebDocumentCount > 0
+              ? ` | Deep corpus: ${result.deepWebDocumentCount}${result.deepWebSynced ? " (synced)" : ""}`
               : "";
-          console.log(`     Corpus: ${result.livePageCount}${scribdNote} | ${result.disclaimer}\n`);
+          console.log(`     Corpus: ${result.livePageCount}${deepNote} | ${result.disclaimer}\n`);
         } catch (err) {
           console.error(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
         }
@@ -229,6 +238,96 @@ scribd
   .description("Show how to connect your Scribd account")
   .action(() => {
     console.log(scribdLoginHelp());
+  });
+
+const sources = program.command("sources").description("Deep-web authenticated source registry");
+
+sources
+  .command("list")
+  .description("List registered authenticated sources and domain access types")
+  .action(() => {
+    loadDomainSeeds(true);
+    console.log("Authenticated adapters:");
+    for (const s of listDeepWebSources()) {
+      console.log(`  - ${s.id}`);
+    }
+    console.log("\nDomain access types (see config/domain-seeds.yaml):");
+    for (const id of ["scribd", "unlisted_public", "computer_science"]) {
+      console.log(`  ${id}: ${resolveDomainAccessType(id)}`);
+    }
+  });
+
+sources
+  .command("login")
+  .argument("<adapter>", "Adapter id (e.g. scribd)")
+  .description("Interactive login for an authenticated source")
+  .action(async (adapter: string) => {
+    const a = getAuthenticatedSource(adapter);
+    if (!a) {
+      console.error(`Unknown adapter: ${adapter}`);
+      process.exit(1);
+    }
+    await a.login();
+  });
+
+sources
+  .command("sync")
+  .argument("<adapter>", "Adapter id (e.g. scribd)")
+  .option("--force", "Force refresh")
+  .description("Sync an authenticated source into local corpus")
+  .action(async (adapter: string, opts) => {
+    try {
+      const config = loadConfig();
+      const result = await syncDeepWebSource(adapter, { force: !!opts.force, config });
+      console.log(`Sync complete: ${result.documentCount} documents (synced=${result.synced})`);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+sources
+  .command("info")
+  .requiredOption("-d, --domain <slug>", "Domain slug")
+  .description("Show deep-web retrieval plan for a domain")
+  .action((opts) => {
+    loadDomainSeeds(true);
+    console.log(deepWebHelpForDomain(opts.domain));
+  });
+
+const ingest = program.command("ingest").description("Sync user-provided URL lists (unlisted public deep web)");
+
+ingest
+  .command("sync")
+  .requiredOption("-d, --domain <slug>", "Domain slug with ingest_list in domain-seeds.yaml")
+  .option("-c, --config <path>", "Config path")
+  .description("Fetch URLs from ingest_list into local corpus")
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    try {
+      const result = await syncDeepWebSource(`ingest:${opts.domain}`, {
+        force: true,
+        config,
+        domain: opts.domain,
+      });
+      console.log(`Ingest sync: ${result.documentCount} documents`);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+ingest
+  .command("validate")
+  .argument("<file>", "Newline-delimited URL list")
+  .description("Validate URLs before adding to an ingest list")
+  .action((file: string) => {
+    const urls = parseUrlListContent(readFileSync(file, "utf8"));
+    const { valid, rejected } = validateIngestUrls(urls);
+    console.log(`Valid: ${valid.length}, Rejected: ${rejected.length}`);
+    for (const r of rejected.slice(0, 10)) {
+      console.log(`  ${r.url} — ${r.reason}`);
+    }
   });
 
 program

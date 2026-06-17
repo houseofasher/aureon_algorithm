@@ -63,7 +63,3 @@ export async function loadScribdKnowledge(opts: ScribdLoadOptions = {}): Promise
     synced,
   };
 }
-
-export function isScribdDomain(domain?: string): boolean {
-  return domain?.trim().toLowerCase() === "scribd";
-}

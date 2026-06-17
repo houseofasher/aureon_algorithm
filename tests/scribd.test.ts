@@ -6,11 +6,12 @@ import {
   scribdDocumentsToChatDocuments,
   type ScribdCorpus,
 } from "../src/sources/scribd-corpus.js";
-import { isScribdDomain } from "../src/sources/scribd-service.js";
+import { isScribdDomain, loadDomainSeeds } from "../src/core/domain-seeds.js";
 import { isScribdHttpUrl, isScribdLibraryUrl, normalizeDocUrl } from "../src/sources/scribd.js";
 
 describe("scribd corpus", () => {
   it("detects scribd domain slug", () => {
+    loadDomainSeeds(true);
     expect(isScribdDomain("scribd")).toBe(true);
     expect(isScribdDomain("computer_science")).toBe(false);
   });

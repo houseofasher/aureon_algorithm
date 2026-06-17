@@ -8,6 +8,8 @@ import { handleChat } from "./chat/chat-service.js";
 import { pagesToLiveDocuments } from "./chat/live-data-policy.js";
 import { loadScribdKnowledge } from "./sources/scribd-service.js";
 import { scribdLoginHelp } from "./sources/scribd.js";
+import { syncDeepWebSource, listDeepWebSources } from "./sources/deep-web-service.js";
+import { loadCorpusManifest } from "./sources/corpus-index.js";
 import { formatReportText, runTopicLookup } from "./topic/index.js";
 import { augmentSeedsForQuestion, prioritizeSeedsForQuestion } from "./chat/retrieval-ranker.js";
 
@@ -149,7 +151,7 @@ export async function startApi(config: AppConfig, host: string, port: number): P
       if (msg.startsWith("CRAWL_INCOMPLETE:")) {
         return reply.code(504).send({ error: "CRAWL_INCOMPLETE", status: msg.split(":")[1] });
       }
-      if (msg.startsWith("SCRIBD_")) {
+      if (msg.startsWith("SCRIBD_") || msg.startsWith("DEEP_")) {
         return reply.code(msg.includes("AUTH") ? 401 : 400).send({
           error: msg.split(" — ")[0],
           detail: msg,
@@ -180,6 +182,43 @@ export async function startApi(config: AppConfig, host: string, port: number): P
         detail: msg,
         help: scribdLoginHelp(),
       });
+    }
+  });
+
+  app.get("/api/sources", async () => ({
+    authenticated: listDeepWebSources(),
+    manifest: loadCorpusManifest(),
+  }));
+
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/api/sources/:id/sync",
+    async (req, reply) => {
+      try {
+        const result = await syncDeepWebSource(req.params.id, {
+          force: req.body?.forceSync === true,
+          config,
+        });
+        return { ...result, manifest: loadCorpusManifest() };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.code(400).send({ error: msg.split(" — ")[0], detail: msg });
+      }
+    },
+  );
+
+  app.post<{ Body: Record<string, unknown> }>("/api/ingest/sync", async (req, reply) => {
+    const domain = String(req.body?.domain ?? "").trim();
+    if (!domain) return reply.code(400).send({ error: "domain required" });
+    try {
+      const result = await syncDeepWebSource(`ingest:${domain}`, {
+        force: true,
+        config,
+        domain,
+      });
+      return { domain, ...result, manifest: loadCorpusManifest() };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.code(400).send({ error: msg.split(" — ")[0], detail: msg });
     }
   });
 

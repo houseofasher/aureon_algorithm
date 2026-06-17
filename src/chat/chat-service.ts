@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../core/config.js";
-import { allowedDomainsFromSeeds, resolveDomainSeeds } from "../core/domain-seeds.js";
+import {
+  allowedDomainsFromSeeds,
+  crawlSeedsForDomain,
+  isCorpusOnlyDomain,
+  resolveDomainAccessType,
+  resolveDomainSeeds,
+} from "../core/domain-seeds.js";
 import type { Orchestrator } from "../core/orchestrator.js";
 import {
   createSession,
@@ -11,7 +17,7 @@ import {
 } from "./algorithm-chatbot.js";
 import { prioritizeSeedsForQuestion } from "./retrieval-ranker.js";
 import { assertLiveSeeds, pagesToLiveDocuments } from "./live-data-policy.js";
-import { isScribdDomain, loadScribdKnowledge } from "../sources/scribd-service.js";
+import { deepWebHelpForDomain, loadDeepWebKnowledge } from "../sources/deep-web-service.js";
 
 const sessions = new Map<string, ChatSession>();
 
@@ -23,7 +29,7 @@ export interface ChatRequest {
   maxDepth?: number;
   maxPages?: number;
   timeoutMs?: number;
-  /** Merge synced Scribd library corpus into retrieval. */
+  /** Merge authenticated deep-web corpus (e.g. Scribd) into public-domain chat. */
   includeScribd?: boolean;
   forceScribdSync?: boolean;
 }
@@ -33,8 +39,10 @@ export interface ChatResponse extends ChatReply {
   crawled: boolean;
   jobId?: string;
   livePageCount: number;
-  scribdDocumentCount?: number;
-  scribdSynced?: boolean;
+  deepWebDocumentCount?: number;
+  deepWebSynced?: boolean;
+  /** @deprecated */ scribdDocumentCount?: number;
+  /** @deprecated */ scribdSynced?: boolean;
 }
 
 function getOrCreateSession(sessionId?: string): ChatSession {
@@ -49,7 +57,7 @@ function getOrCreateSession(sessionId?: string): ChatSession {
 function resolveLiveSeeds(req: ChatRequest): string[] {
   const seeds =
     req.seeds?.filter(Boolean) ??
-    (req.domain?.trim() ? resolveDomainSeeds(req.domain) : []);
+    (req.domain?.trim() ? crawlSeedsForDomain(req.domain) : []);
   return assertLiveSeeds(seeds);
 }
 
@@ -90,58 +98,96 @@ async function crawlLiveDocuments(
 }
 
 async function resolveChatDocuments(
+  config: AppConfig,
   orchestrator: Orchestrator,
   req: ChatRequest,
 ): Promise<{
   documents: ChatDocument[];
   seeds: string[];
   jobId?: string;
-  scribdDocumentCount: number;
-  scribdSynced: boolean;
+  deepWebDocumentCount: number;
+  deepWebSynced: boolean;
   crawled: boolean;
 }> {
-  const useScribdOnly = isScribdDomain(req.domain);
-  const mergeScribd = useScribdOnly || req.includeScribd === true;
+  const domain = req.domain?.trim() ?? "";
+  const accessType = domain ? resolveDomainAccessType(domain) : "public";
+  const corpusOnly = isCorpusOnlyDomain(domain);
+  const wantsDeep =
+    corpusOnly ||
+    accessType === "hybrid" ||
+    req.includeScribd === true;
 
-  let scribdDocs: ChatDocument[] = [];
-  let scribdSynced = false;
-  if (mergeScribd) {
-    const scribd = await loadScribdKnowledge({ forceSync: req.forceScribdSync });
-    scribdDocs = scribd.documents;
-    scribdSynced = scribd.synced;
+  let deepDocs: ChatDocument[] = [];
+  let deepSynced = false;
+
+  if (wantsDeep && domain) {
+    try {
+      const deep = await loadDeepWebKnowledge({
+        domain,
+        forceSync: req.forceScribdSync,
+        includeScribd: req.includeScribd,
+        config,
+      });
+      deepDocs = deep.documents;
+      deepSynced = deep.synced;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (corpusOnly) {
+        throw new Error(`${msg}\n\n${deepWebHelpForDomain(domain)}`);
+      }
+      console.warn(`[deep-web] optional corpus skipped: ${msg}`);
+    }
   }
 
-  if (useScribdOnly) {
-    if (!scribdDocs.length) {
-      throw new Error("SCRIBD_EMPTY — sync your library first: omnispider scribd sync");
+  if (corpusOnly) {
+    if (!deepDocs.length) {
+      throw new Error(`DEEP_CORPUS_EMPTY — no deep-web corpus for domain "${domain}"`);
     }
     return {
-      documents: scribdDocs,
-      seeds: [resolveDomainSeeds("scribd")[0] ?? "https://www.scribd.com/home"],
-      scribdDocumentCount: scribdDocs.length,
-      scribdSynced,
+      documents: deepDocs,
+      seeds: resolveDomainSeeds(domain).length
+        ? [resolveDomainSeeds(domain)[0]]
+        : [`deep-web://${domain}`],
+      deepWebDocumentCount: deepDocs.length,
+      deepWebSynced: deepSynced,
       crawled: false,
     };
   }
 
-  const crawled = await crawlLiveDocuments(orchestrator, req);
-  const documents = [...scribdDocs, ...crawled.documents];
+  let crawledDocs: ChatDocument[] = [];
+  let jobId: string | undefined;
+  let seeds: string[] = resolveLiveSeeds(req);
+
+  try {
+    const crawled = await crawlLiveDocuments(orchestrator, req);
+    crawledDocs = crawled.documents;
+    jobId = crawled.jobId;
+    seeds = crawled.seeds;
+  } catch (err) {
+    if (accessType === "hybrid" && deepDocs.length) {
+      console.warn(`[deep-web] hybrid crawl failed, using corpus only: ${err instanceof Error ? err.message : err}`);
+    } else {
+      throw err;
+    }
+  }
+
+  const documents = [...deepDocs, ...crawledDocs];
   if (!documents.length) {
-    throw new Error("LIVE_DATA_REQUIRED — no documents from crawl or Scribd corpus");
+    throw new Error("LIVE_DATA_REQUIRED — no documents from deep corpus or live crawl");
   }
 
   return {
     documents,
-    seeds: crawled.seeds,
-    jobId: crawled.jobId,
-    scribdDocumentCount: scribdDocs.length,
-    scribdSynced,
-    crawled: true,
+    seeds,
+    jobId,
+    deepWebDocumentCount: deepDocs.length,
+    deepWebSynced: deepSynced,
+    crawled: crawledDocs.length > 0,
   };
 }
 
 export async function handleChat(
-  _config: AppConfig,
+  config: AppConfig,
   orchestrator: Orchestrator,
   req: ChatRequest,
 ): Promise<ChatResponse> {
@@ -149,7 +195,7 @@ export async function handleChat(
   if (!message) throw new Error("message required");
 
   const session = getOrCreateSession(req.sessionId);
-  const resolved = await resolveChatDocuments(orchestrator, req);
+  const resolved = await resolveChatDocuments(config, orchestrator, req);
 
   const reply = respondAlgorithm(session, message, resolved.documents, resolved.seeds);
   sessions.set(reply.session.id, reply.session);
@@ -160,8 +206,10 @@ export async function handleChat(
     crawled: resolved.crawled,
     jobId: resolved.jobId,
     livePageCount: resolved.documents.length,
-    scribdDocumentCount: resolved.scribdDocumentCount,
-    scribdSynced: resolved.scribdSynced,
+    deepWebDocumentCount: resolved.deepWebDocumentCount,
+    deepWebSynced: resolved.deepWebSynced,
+    scribdDocumentCount: resolved.deepWebDocumentCount,
+    scribdSynced: resolved.deepWebSynced,
   };
 }
 

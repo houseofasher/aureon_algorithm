@@ -53,14 +53,21 @@ economics:
     - https://www.investopedia.com/
 
 default:
+  type: public
   seeds:
     - https://www.britannica.com/
 
-# Personal Scribd library — deep-web style (login-gated, not indexable by search engines).
-# Public crawl seeds cannot fetch these pages; use authenticated sync instead:
-#   omnispider scribd login && omnispider scribd sync
-# Chat: omnispider chat -d scribd "your question"
+# Unlisted public URLs — deep web without login (user-provided URL list).
+unlisted_public:
+  type: ingest
+  ingest_list: config/url-lists/unlisted_public.txt
+  seeds: []
+
+# Personal Scribd library — deep web (login-gated, not search-indexed).
+# type: authenticated → corpus sync only; public crawl of these seeds is blocked.
 scribd:
+  type: authenticated
+  adapter: scribd
   seeds:
     - https://www.scribd.com/home
     - https://www.scribd.com/saved

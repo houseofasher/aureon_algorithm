@@ -10,6 +10,7 @@ describe("domain-seeds", () => {
   it("loads physics and history whitelists", () => {
     const config = loadDomainSeeds(true);
     expect(config.physics?.seeds?.length).toBeGreaterThan(0);
+    expect(config.physics?.type ?? "public").toBe("public");
     expect(config.history?.seeds?.some((s) => s.includes("britannica"))).toBe(true);
   });
 
